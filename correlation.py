@@ -24,6 +24,8 @@ def cmdline():
 
     g0.add_argument('events', nargs='+', help='Id of one or more events to process.')
 
+
+    
     # Correlation parameters
     g1 = parser.add_argument_group('Correlation Parameters')
 
@@ -36,6 +38,8 @@ def cmdline():
     g1.add_argument('-w', '--window', default = 'P/-1/2', type = str,
                         help = 'Window size to perform the correlation. Format is Phase/pre[/pos]. Pre and Pos are positive numbers, Phase is one of P or S. [] are optional.')
 
+
+    
     # Filters
     g2 = parser.add_argument_group('Data Processing Parameters')
 
@@ -45,6 +49,8 @@ def cmdline():
     g2.add_argument('-hp', '--high-pass', type = float, 
                         default = 1.2, help = 'High pass filter value [Hz].')
 
+
+    
     # FDSN server sources
     g3 = parser.add_argument_group('Data Fetching parameters')
 
