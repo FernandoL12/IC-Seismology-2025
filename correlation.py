@@ -153,6 +153,130 @@ def correlate(data, args):
     return corr_results
 
 
+def same_length(small, big, t0, offset=0, n_samples=None):
+    """
+    Trace, Trace, float, list, float(opt) --> Trace, Trace
+
+    Arguments:
+
+    small: obspy.core.trace.Trace (must contain .data, .time and
+           .stats.delta)
+
+    big: obspy.core.trace.Trace (must contain .data, .time and
+           .stats.delta)
+
+    t0: float (initial time to trim data)
+
+    n_samples: float (number of samples new traces must have)
+
+    n_sec: float (number of seconds that new trace should have)
+
+    Gets two traces and the initial time. Cut both traces with the same
+    amount of samples, moving, if necessary, the interval's limits to
+    the nearest sample.
+
+    By default, if n_samples is not given, is used the number of samples
+    is equal 2s of 'small' seismometer acquisition samples.
+    """
+
+    if len(small.data) > len(big.data):
+        raise Exception(f"The trace 'small' is bigger than 'big'. "
+                        f"Please, switch this arguments position.")
+    if len(small.data) == len(big.data):
+        return small, big
+
+    dt = small.stats.delta
+    if n_samples is None:
+        n_samples = int(2 * 1/dt)
+
+    # Trimming SMALL
+    # finding initial time to trim (small_ti)
+    times_small = small.times()
+    find=False
+    cont=0
+    for i, t in enumerate(times_small[:-1]):
+        if len(small) == n_samples:
+            break
+        if find:
+            cont += 1
+        if t == t0:
+            small_ti = t0
+            cont = 1
+            find=True
+        elif t + dt > t0 and not find:
+            if abs(t) - abs(t0) <= abs(times_small[i+1]) - abs(t0):
+                small_ti = t
+                cont = 1
+            else:
+                small_ti = times_small[i+1]
+                cont = 0
+            find=True
+        # finding final time to trim (small_tf)
+        if cont == n_samples:
+            small_tf = t
+            break
+    if find:
+        if cont < n_samples:
+            raise Exception(f"{n_samples} samples exceeds number of samples"
+                        f" after t0(total={cont}) for trace 'small'")
+    if find:
+        tr = small.stats.starttime
+        small.trim(tr+small_ti, tr+small_tf)
+
+    # Trimming BIG
+    # finding initial time to trim (big_ti)
+    times_big = big.times()+offset
+    start = times_big[0]
+    find=False
+    cont=0
+    for i, t in enumerate(times_big[:-1]):
+        if find:
+            cont+=1
+        if t == t0:
+            big_ti = np.abs(t0-start)
+            cont = 1
+            find=True
+        elif t + dt > t0 and not find:
+            if abs(t) - abs(t0) <= abs(times_big[i+1]) - abs(t0):
+                big_ti = np.abs(t-start)
+                cont = 1
+            else:
+                big_ti = times_big[i+1]
+                cont = 0
+            find=True
+        
+        # finding final time to trim (big_tf)
+        if cont == n_samples:
+            big_tf = np.abs(t-start)
+            break    
+    if cont < n_samples:
+        raise Exception(f"{n_samples} samples exceeds number of samples"
+                        f" after t0(total={cont}) for trace 'small'")
+    tr = big.stats.starttime
+    big.trim(tr+big_ti, tr+big_tf)
+
+    return small, big
+
+
+# Pick correction function
+def Ppick_cc(trace1, trace2):
+    """
+    Trace, Trace --> list, list, float
+
+    Utilizes cross-correlation between two given traces to 
+    correct P phase pick.
+    """
+    corr = correlate(trace1.data, trace2.data, mode='valid')
+    lags = correlation_lags(len(trace1.data), len(trace2.data), mode='valid')
+    
+    if abs(lags[corr.argmax()] * dt) <= maxshift:
+        OFFSET = lags[corr.argmax()] * dt
+    else:
+        OFFSET = 0
+
+    return corr, lags, OFFSET
+
+
 ## Visualização
 def plot_matrix(data, corr_results, args):
     return
@@ -178,92 +302,6 @@ def plot_matrix(data, corr_results, args):
 
 
     print(f'\n\n')
-
-
-def same_length(small, big, t0, n_samples=None):
-	"""
-	Trace, Trace, float, float(opt), float(opt) --> Trace, Trace
-	
-	Arguments:
-	
-	small: obspy.core.trace.Trace (must contain .data, .time and 
-		   .stats.delta)
-	
-	big: obspy.core.trace.Trace (must contain .data, .time and 
-		   .stats.delta)
-	
-	t0: float (initial time to trim data)
-	
-	n_samples: float (number of samples new traces must have)
-	
-	n_sec: float (number of seconds that new trace should have)
-	
-	Gets two traces and the initial time. Cut both traces with the same
-	amount of samples, moving, if necessary, the interval's  limits  to 
-	the nearest sample.
-	
-	By default, if n_samples is not given, is used the number of samples
-	is equal 2s of 'small' seismometer aquisition samples.
-	"""
-
-	if len(small.data) > len(big.data):
-		raise Exception(f"The trace 'small' is bigger than 'big'. "
-						f"Please, switch this arguments position.")
-    if len(small.data) == len(big.data):
-        return small, big
-    
-    dt = small.stats.delta
-	if n_samples == None:
-		n_samples = 2 * 1/dt
-
-	# Trimming SMALL
-	# finding initial time to trim (small_ti)
-	for i, t in enumerate(small.times()):
-		if  t == t0:
-			small_ti = t0
-			cont = 1
-			
-		elif t+dt > t0:
-			if abs(t) - abs(t0) < abs(small[i+1]) - abs(t0):
-				small_ti = t
-				cont = 1
-			else:
-				small_ti = small[i+1]
-				cont = 0
-			
-		# finding final time to trim (small_tf)
-		if cont == n_samples:		
-			small_tf = t
-			break
-	if cont < n_samples:
-		raise Exception(f"{n_samples} samples exceeds number of samples"
-						f" after t0({cont}) for trace 'small'")
-    small.trim(small_ti,small_tf)
-    
-	# Trimming BIG
-	# finding initial time to trim (big_ti)
-	for i, t in enumerate(big.times()):
-		if  t == t0:
-			big_ti = t0
-			cont = 1
-			
-		elif t+dt > t0:
-			if abs(t) - abs(t0) < abs(big[i+1]) - abs(t0):
-				big_ti = t
-				cont = 1
-			else:
-				big_ti = big[i+1]
-				cont = 0
-			
-		# finding final time to trim (big_tf)
-		if cont == n_samples:
-			big_tf = t
-			break
-	if cont < n_samples:
-		raise Exception(f"{n_samples} samples exceeds number of samples"
-						f" after t0({cont}) for trace 'big'")
-    big.trim(big_ti,big_tf)
-            
 ######################################################################################################
 ## Código Principal
 ######################################################################################################
