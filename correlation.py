@@ -162,8 +162,8 @@ def Ppick_cc(trace1, trace2):
     OFFSET = lags[corr.argmax()] * dt
     
     return corr, lags, OFFSET
-    
-    
+
+
 #	3.2) Trim data with the same amount of samples needed
 def npts_cut(tr, t0, length = 2, npts = None):
     '''
@@ -186,8 +186,8 @@ def npts_cut(tr, t0, length = 2, npts = None):
         trc.trim(t0real, t0real + length, nearest_sample=False)    
     else:
         trc.trim(t0real, t0real + npts * tr.stats.delta, nearest_sample=False)
-   
-    return trc    
+
+    return trc
 
 
 # 3.3) Builds post correlation correction matrix
@@ -234,52 +234,46 @@ def corr_matrix(ev_id, station, phase, fmin, fmax,
     # Laço que passa por todos os eventos em ev_id e faz a leitura e correção do pick de P para as réplicas que foram
     # registradas pela variável "station"
     for i in range(size):
-        # Passa a lista ev_id e tira os dados da "station"
-        for s1, t1 in evpicks(ev_id[i], phases=phase, client = cl_e):
-            if s1 == station:
-                data1 = evtrace(station, t1, t1-start1, t1+end1, fmin, fmax, client = cl_d)
-                dt = data1.stats.delta
-    
-                # Passa a lista ev_id e tira as formas de ondas dos demais eventos que aconteceram em "station"
-                for j in range(i + 1, size):
-                    for s2, t2 in evpicks(ev_id[j], phases=phase, client = cl_e):
-                        if s2 == station:
-                            # Aqui vai ser feito uma análise com um chute inicial
-                            data2 = evtrace(station, t2, t2-start2, t2+end2, fmin, fmax, client = cl_d)
+        s1, t1 = evpicks(ev_id[i], phases=phase, client = cl_e, station= station)[0]
+        data1 = evtrace(station, t1, t1-start1, t1+end1, fmin, fmax, client = cl_d)
 
-                            OFFSET_CORR = 0.0
-                            OFFSET= 0.0
-                            lags = None
-                            corr = None
+        for j in range(i + 1, size):
+            s2, t2 = evpicks(ev_id[j], phases=phase, client = cl_e, station = station)[0]
+            data2 = evtrace(station, t2, t2-start2, t2+end2, fmin, fmax, client = cl_d)
 
-                            if correction:
-                                corr, lags, OFFSET = Ppick_cc(data1, data2)
-                                FACTOR1 = 1/np.max(data1.data)
-                                FACTOR2 = 1/np.max(data2.data)
-                                OFFSET_CORR = (t1 - data1.times('utcdatetime')[0]) - (t2 - data2.times('utcdatetime')[0] + OFFSET)
+            OFFSET_CORR = 0.0
+            OFFSET= 0.0
+            lags = None
+            corr = None
 
-                            data1 = npts_cut(data1, t0 = t1 - start1, length = (start1 + end1))
-                            data2 = npts_cut(data2, t0 = t2 - start1 + OFFSET_CORR, npts = data1.stats.npts)
+            if correction:
+                corr, lags, OFFSET = Ppick_cc(data1, data2)
+                FACTOR1 = 1/np.max(data1.data)
+                FACTOR2 = 1/np.max(data2.data)
+                OFFSET_CORR = (t1 - data1.times('utcdatetime')[0]) - (t2 - data2.times('utcdatetime')[0] + OFFSET)
 
-                            print(f"Append i= {i} j={j} evA={ev_id[i]} evB={ev_id[j]} OFFSET={OFFSET:+5.2f} OFFSET_COR={OFFSET_CORR:+5.2f} {'!' if OFFSET_CORR > maxshift else ''}")
+            data1 = npts_cut(data1, t0 = t1 - start1, length = (start1 + end1))
+            data2 = npts_cut(data2, t0 = t2 - start1 + OFFSET_CORR, npts = data1.stats.npts)
 
-                            results.append(AttribDict({
-                                'i': i,
-                                'j': j,
-                                'data1': data1,
-                                'data2': data2,
-                                'lags': lags,
-                                'corr': corr,
-                                'OFFSET': OFFSET,
-                                'OFFSET_CORR': OFFSET_CORR,
-                                's1':s1,
-                                's2':s2,
-                                't1':t1,
-                                't2':t2,
-                                'eid1': ev_id[i],
-                                'eid2': ev_id[j],
-                                'M': np.abs(np.corrcoef(data1.data, data2.data)[0][1])
-                            }))
+            print(f"Append i= {i} j={j} evA={ev_id[i]} evB={ev_id[j]} OFFSET={OFFSET:+5.2f} OFFSET_COR={OFFSET_CORR:+5.2f} {'!' if OFFSET_CORR > maxshift else ''}")
+
+            results.append(AttribDict({
+                'i': i,
+                'j': j,
+                'data1': data1,
+                'data2': data2,
+                'lags': lags,
+                'corr': corr,
+                'OFFSET': OFFSET,
+                'OFFSET_CORR': OFFSET_CORR,
+                's1':s1,
+                's2':s2,
+                't1':t1,
+                't2':t2,
+                'eid1': ev_id[i],
+                'eid2': ev_id[j],
+                'M': np.abs(np.corrcoef(data1.data, data2.data)[0][1])
+            }))
 
     return results
 
@@ -301,6 +295,9 @@ def assembly_matrix(results):
 
 ## 4) Visualização _____________________________________________________
 # 	4.1) Plot a heatmap using a given matrix
+
+
+# ~ def plot_matrix(results, figsize=(8,6), cmap="Accent_r")
 def plot_matrix(corr_M, ev_id, figsize=(8,6), cmap="Accent_r"):
     """
     matrix, list, tuple, string --> heatmap
@@ -338,6 +335,7 @@ def plot_matrix(corr_M, ev_id, figsize=(8,6), cmap="Accent_r"):
             # ~ facecolor='auto', edgecolor='auto', backend=None,
            # ~ )
            
+
 
 #	4.2) Print da matriz
 def print_matrix(matrix, ev_id):
@@ -424,7 +422,8 @@ def plot_graph(info_dict, ncols=5, figsize=(30,10)):
     
     
     plt.tight_layout()
-       
+
+
 ######################################################################################################
 ## Código Principal
 ######################################################################################################
