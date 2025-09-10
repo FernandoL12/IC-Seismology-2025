@@ -1,12 +1,23 @@
 #! /usr/bin/env python3
 
 #############################
-## The CC correlation code.##
+## The CC correlation code ##
 #############################
 
-from obspy.clients import fdsn
 import argparse
+import numpy as np
+import seaborn as sns
+from obspy.clients import fdsn
+import matplotlib.pyplot as plt
+from obspy.core import UTCDateTime
 
+# For correlation
+from __future__ import print_function
+from scipy.signal import correlate, correlation_lags
+from obspy.signal.cross_correlation import xcorr_pick_correction
+
+import warnings
+warnings.filterwarnings("ignore")
 ######################################################################################################
 ## Functions
 ######################################################################################################
@@ -59,7 +70,7 @@ def cmdline():
 
 
 ## Processamento
-def evpicks(evid, phases = ['P'], station = None, client = None):
+def evpicks(evid, phases = ['P'], station = None, client = 'http://10.110.0.135:18003'):
     '''
     str, str (default=SeisVL) list['str'] --> str, float
 
@@ -75,7 +86,8 @@ def evpicks(evid, phases = ['P'], station = None, client = None):
     try:
         evp = cl_e.get_events(eventid = evid, includearrivals=True)
     except:
-        return print(f'No event with {evid} ID detected. Make sure it is in Vale event list (val2025....)!') # None
+        print(f'No event with {evid} ID detected. Make sure it is in Vale event list (val2025....)!') # None
+        return [(None, None)]
 
     #Pega o 1o evento e sua origem preferida
     E = evp[0]
@@ -91,7 +103,7 @@ def evpicks(evid, phases = ['P'], station = None, client = None):
         P = [ P for P in E.picks if P.resource_id == A.pick_id ][0]
         
         if station is not None and station == P.waveform_id.id:
-            return (P.waveform_id.id, P.time)
+            return [ (P.waveform_id.id, P.time) ] 
 
         all_data.append((P.waveform_id.id, P.time))
 
@@ -153,109 +165,35 @@ def correlate(data, args):
     return corr_results
 
 
-def same_length(small, big, t0, offset=0, n_samples=None):
-    """
-    Trace, Trace, float, list, float(opt) --> Trace, Trace
+def npts_cut(tr, t0, length=2, npts=None, offset=0):
+    '''
+    Trace, UTCDateTime, int, int, float --> Trace
+    
+    tr     = trace
+    t0     = UTCDateTime (para o cut)
+    length = tempo em segundos de dados
+    npts   = tempo em número de amostras desejado
+    '''
+    
+    # Converte tempo relativo para UTC
+    if not type(t0) == UTCDateTime:
+        for i, t in enumerate(tr.times()):
+            if t == t0:
+                t0 = tr.times("utcdatetime")[i]
+                break
+    # Acha o tempo da amostra mais próxima do tempo dado = t0
+    t0real = tr.times("utcdatetime")[(np.abs(tr.times("utcdatetime")-t0+offset).argmin())]-tr.stats.delta/2.0
 
-    Arguments:
+    # Antes de cortar faz uma copia para não destruir o traco original
+    trc = tr.copy()
 
-    small: obspy.core.trace.Trace (must contain .data, .time and
-           .stats.delta)
-
-    big: obspy.core.trace.Trace (must contain .data, .time and
-           .stats.delta)
-
-    t0: float (initial time to trim data)
-
-    n_samples: float (number of samples new traces must have)
-
-    n_sec: float (number of seconds that new trace should have)
-
-    Gets two traces and the initial time. Cut both traces with the same
-    amount of samples, moving, if necessary, the interval's limits to
-    the nearest sample.
-
-    By default, if n_samples is not given, is used the number of samples
-    is equal 2s of 'small' seismometer acquisition samples.
-    """
-
-    if len(small.data) > len(big.data):
-        raise Exception(f"The trace 'small' is bigger than 'big'. "
-                        f"Please, switch this arguments position.")
-    if len(small.data) == len(big.data):
-        return small, big
-
-    dt = small.stats.delta
-    if n_samples is None:
-        n_samples = int(2 * 1/dt)
-
-    # Trimming SMALL
-    # finding initial time to trim (small_ti)
-    times_small = small.times()
-    find=False
-    cont=0
-    for i, t in enumerate(times_small[:-1]):
-        if len(small) == n_samples:
-            break
-        if find:
-            cont += 1
-        if t == t0:
-            small_ti = t0
-            cont = 1
-            find=True
-        elif t + dt > t0 and not find:
-            if abs(t) - abs(t0) <= abs(times_small[i+1]) - abs(t0):
-                small_ti = t
-                cont = 1
-            else:
-                small_ti = times_small[i+1]
-                cont = 0
-            find=True
-        # finding final time to trim (small_tf)
-        if cont == n_samples:
-            small_tf = t
-            break
-    if find:
-        if cont < n_samples:
-            raise Exception(f"{n_samples} samples exceeds number of samples"
-                        f" after t0(total={cont}) for trace 'small'")
-    if find:
-        tr = small.stats.starttime
-        small.trim(tr+small_ti, tr+small_tf)
-
-    # Trimming BIG
-    # finding initial time to trim (big_ti)
-    times_big = big.times()+offset
-    start = times_big[0]
-    find=False
-    cont=0
-    for i, t in enumerate(times_big[:-1]):
-        if find:
-            cont+=1
-        if t == t0:
-            big_ti = np.abs(t0-start)
-            cont = 1
-            find=True
-        elif t + dt > t0 and not find:
-            if abs(t) - abs(t0) <= abs(times_big[i+1]) - abs(t0):
-                big_ti = np.abs(t-start)
-                cont = 1
-            else:
-                big_ti = times_big[i+1]
-                cont = 0
-            find=True
-        
-        # finding final time to trim (big_tf)
-        if cont == n_samples:
-            big_tf = np.abs(t-start)
-            break    
-    if cont < n_samples:
-        raise Exception(f"{n_samples} samples exceeds number of samples"
-                        f" after t0(total={cont}) for trace 'small'")
-    tr = big.stats.starttime
-    big.trim(tr+big_ti, tr+big_tf)
-
-    return small, big
+    # Corta exatamente npts amostras
+    if npts is None:
+        trc.trim(t0real, t0real + length, nearest_sample=False)    
+    else:
+        trc.trim(t0real, t0real + npts * tr.stats.delta, nearest_sample=False)
+   
+    return trc    
 
 
 # Pick correction function
@@ -278,30 +216,42 @@ def Ppick_cc(trace1, trace2):
 
 
 ## Visualização
-def plot_matrix(data, corr_results, args):
-    return
-    '''
-    list, matrix --> print
+def plot_matrix(corr_M, ev_id, figsize=(8,6), cmap="Accent_r"):
+    """
+    matrix, list, tuple, string --> heatmap
     
-    Receives a list o IDs and an already existing matrix with correlation values.
-    It is recommended that the values are normalized by maximum lag.
-    '''
+    Plot a heatmap using a given matrix
+    """
     
-    size = len(ev_id)
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize)
 
-    print('Matriz de correlação:')
-    for i in range(size):
-        print('|', end='   ')
-        for j in range(size):
-            if matrix[i,j] < 0:
-                print(f'{matrix[i,j]:.2f}', end='   ')
-            else:
-                print(f'{matrix[i,j]:.2f}', end='    ')
-        print('|', end ='')        
-        print()
-
-
-    print(f'\n\n')
+    ### Inicial
+    Max = np.max(np.abs(corr_M))
+    Min = -Max
+    
+    sns.heatmap(
+        corr_M,
+        cmap=cmap,
+        vmin=Min,
+        vmax=Max,
+        annot=True,
+        ax=ax,
+        xticklabels=ev_id,
+        yticklabels=ev_id,
+        cbar_kws={'label': 'Correlation value'}
+        )
+    
+    ax.figure.axes[-1].yaxis.label.set_size(12)
+    ax.set_title(f'Correlation matrix\nStation code: {station} | Nº of events: {size}', fontsize=16)
+    ax.tick_params(axis="x", rotation=20, labelsize=12)
+    ax.tick_params(axis="y", labelsize=12)
+    
+    savefig("Correlation matrix", *, transparent=None, dpi='figure', 
+			format=None, metadata=None, bbox_inches=None, pad_inches=0.1,
+			facecolor='auto', edgecolor='auto', backend=None,
+		   )
+       
+       
 ######################################################################################################
 ## Código Principal
 ######################################################################################################
