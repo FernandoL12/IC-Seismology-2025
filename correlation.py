@@ -1,28 +1,30 @@
 #! /usr/bin/env python3
 
-#############################
-## The CC correlation code ##
-#############################
+###############################
+### The CC correlation code ###
+###############################
 
+## Libraries
 import argparse
 import numpy as np
 import seaborn as sns
 from obspy.clients import fdsn
 import matplotlib.pyplot as plt
-from obspy.core import UTCDateTime
+from obspy.core import UTCDateTime, AttribDict, Stream
 
 # For correlation
-from __future__ import print_function
 from scipy.signal import correlate, correlation_lags
 from obspy.signal.cross_correlation import xcorr_pick_correction
 
 import warnings
 warnings.filterwarnings("ignore")
-######################################################################################################
-## Functions
-######################################################################################################
+#_______________________________________________________________________
 
-## Utils
+###############
+## Functions ##
+###############
+
+## 1) Input ____________________________________________________________
 def cmdline():
     parser = argparse.ArgumentParser(
                     prog='CC',
@@ -31,7 +33,6 @@ def cmdline():
 
     # General Parameters
     g0 = parser.add_argument_group('General')
-    g0.add_argument('-a', '--action' , choices=[ 'matrix' ])
     g0.add_argument('-v', '--verbose', action='store_true' )
     g0.add_argument('-s', '--station', type = str,
                         help = 'Indicate station to use.')
@@ -60,7 +61,7 @@ def cmdline():
     g3 = parser.add_argument_group('Data Fetching parameters')
     g3.add_argument('-F', '--fdsn', type = str, 
                         default = 'http://seisvl.sismo.iag.usp.br/', help = 'FDSN server to fetch data. If no -E option is given this is the default server to fetch events.')
-    g3.add_argument('-E', '--event-fdns', type = str,
+    g3.add_argument('-E', '--event-fdsn', type = str,
                         default = None, help = 'FDSN serve to fetch event. Defaults to same as -F')
 
     # Process
@@ -69,7 +70,8 @@ def cmdline():
     return args
 
 
-## Processamento
+## 2) Data Extraction __________________________________________________
+#	2.1) Get phase time pick and waveform_id.id (net, sta, loc, chan)
 def evpicks(evid, phases = ['P'], station = None, client = 'http://10.110.0.135:18003'):
     '''
     str, str (default=SeisVL) list['str'] --> str, float
@@ -113,6 +115,7 @@ def evpicks(evid, phases = ['P'], station = None, client = 'http://10.110.0.135:
     return all_data
 
 
+#	2.2) Get trace information and UTC and Relative time of each sample
 def evtrace(sta, tp, t0, t1, fmin = 2.0, fmax = 10.0, margin = 2.0, client = None):
     '''
     str, float, float, float, float (opt), float (opt), float (opt), str (opt) --> numpy.ndarray, numpy.ndarray
@@ -129,43 +132,40 @@ def evtrace(sta, tp, t0, t1, fmin = 2.0, fmax = 10.0, margin = 2.0, client = Non
                               attach_response = True)
     
     ## Errors
-    ##
     if len(data) == 0:
         raise Exception("No data for station {} at time t = {}-{}".format(sta, t0, t1))
     elif len(data) > 1:
         raise Exception("Data with gaps for station {} at time t = {}-{}".format(sta, t0, t1))
     
     ## Process
-    ##
     trace = data[0]
     trace.detrend()
     trace.filter("bandpass", freqmin=fmin, freqmax=fmax)
-    
     trace.trim(t0,t1)
     
     return trace
 
 
-def correlate(data, args):
-    corr_results = {
-        'a': {
-            'b' : (corr_sem_deslocar, cor_deslocado, lag_deslocamento),
-            'c' : (), 
-        },
-        'b' : {
-                'a': (),
-                'c': ()
-        }
-    }
+## 3) Processing _______________________________________________________
+#	3.1) Pick correction function
+def Ppick_cc(trace1, trace2):
+    """
+    Trace, Trace, float --> list, list, float
 
-    for i1,d1 in enumerate(data):
-        for i2,d2 in enumerate(data[i1+1:]):
-            pass
-
-    return corr_results
-
-
-def npts_cut(tr, t0, length=2, npts=None, offset=0):
+    Utilizes cross-correlation between two given traces to 
+    correct P phase pick.
+    """
+    
+    dt = trace1.stats.delta
+    corr = correlate(trace1.data, trace2.data, mode='valid')
+    lags = correlation_lags(len(trace1.data), len(trace2.data), mode='valid')
+    OFFSET = lags[corr.argmax()] * dt
+    
+    return corr, lags, OFFSET
+    
+    
+#	3.2) Trim data with the same amount of samples needed
+def npts_cut(tr, t0, length = 2, npts = None):
     '''
     Trace, UTCDateTime, int, int, float --> Trace
     
@@ -174,15 +174,9 @@ def npts_cut(tr, t0, length=2, npts=None, offset=0):
     length = tempo em segundos de dados
     npts   = tempo em número de amostras desejado
     '''
-    
-    # Converte tempo relativo para UTC
-    if not type(t0) == UTCDateTime:
-        for i, t in enumerate(tr.times()):
-            if t == t0:
-                t0 = tr.times("utcdatetime")[i]
-                break
+
     # Acha o tempo da amostra mais próxima do tempo dado = t0
-    t0real = tr.times("utcdatetime")[(np.abs(tr.times("utcdatetime")-t0+offset).argmin())]-tr.stats.delta/2.0
+    t0real = tr.times("utcdatetime")[(np.abs(tr.times("utcdatetime")-t0).argmin())]-tr.stats.delta/2.0
 
     # Antes de cortar faz uma copia para não destruir o traco original
     trc = tr.copy()
@@ -196,26 +190,117 @@ def npts_cut(tr, t0, length=2, npts=None, offset=0):
     return trc    
 
 
-# Pick correction function
-def Ppick_cc(trace1, trace2):
+# 3.3) Builds post correlation correction matrix
+def corr_matrix(ev_id, station, phase, fmin, fmax,
+                start1, start2, end1, end2,  maxshift, 
+                correction, cl_e, cl_d):
     """
-    Trace, Trace --> list, list, float
+    Creates a corrected P pick correlation matrix.
 
-    Utilizes cross-correlation between two given traces to 
-    correct P phase pick.
+    ev_id: list of events IDs.
+
+    station: station code (example: VL.SLBO..HHZ).
+
+    t0: initial time to trim data in seconds [s].
+
+    phase: list with the phase you would like to make a graph.
+
+    fmin: minimum frequency [Hz] to cut (high-pass).
+    fmax: maximum frequency [Hz] to cut (low-pass).
+
+    start1: beginning of first trace (must be the smaller one). 
+            Time in seconds [s] before P arrival.
+    start2: beginning of second trace (must be the bigger one).
+            Time in seconds [s] before P arrival.
+
+    end1: end of first trace (must be the smaller one).
+          Time in seconds [s] after P arrival.
+    end2: end of second trace (must be the bigger one).
+          Time in seconds [s] after P arrival.
+
+    maxshift: maximum shift allowed in seconds [s].
+
+    n_samples: number of samples to cut traces.
+
+    correction: condition if the finction should make a 
+    cross-correlation pick correction.
     """
-    corr = correlate(trace1.data, trace2.data, mode='valid')
-    lags = correlation_lags(len(trace1.data), len(trace2.data), mode='valid')
     
-    if abs(lags[corr.argmax()] * dt) <= maxshift:
-        OFFSET = lags[corr.argmax()] * dt
-    else:
-        OFFSET = 0
+    size = len(ev_id)
+    
+    # Criando duas listas para arnazenar os lag e as formas de ondas pós correlação
+    results = []
+    
+    # Laço que passa por todos os eventos em ev_id e faz a leitura e correção do pick de P para as réplicas que foram
+    # registradas pela variável "station"
+    for i in range(size):
+        # Passa a lista ev_id e tira os dados da "station"
+        for s1, t1 in evpicks(ev_id[i], phases=phase, client = cl_e):
+            if s1 == station:
+                data1 = evtrace(station, t1, t1-start1, t1+end1, fmin, fmax, client = cl_d)
+                dt = data1.stats.delta
+    
+                # Passa a lista ev_id e tira as formas de ondas dos demais eventos que aconteceram em "station"
+                for j in range(i + 1, size):
+                    for s2, t2 in evpicks(ev_id[j], phases=phase, client = cl_e):
+                        if s2 == station:
+                            # Aqui vai ser feito uma análise com um chute inicial
+                            data2 = evtrace(station, t2, t2-start2, t2+end2, fmin, fmax, client = cl_d)
 
-    return corr, lags, OFFSET
+                            OFFSET_CORR = 0.0
+                            OFFSET= 0.0
+                            lags = None
+                            corr = None
+
+                            if correction:
+                                corr, lags, OFFSET = Ppick_cc(data1, data2)
+                                FACTOR1 = 1/np.max(data1.data)
+                                FACTOR2 = 1/np.max(data2.data)
+                                OFFSET_CORR = (t1 - data1.times('utcdatetime')[0]) - (t2 - data2.times('utcdatetime')[0] + OFFSET)
+
+                            data1 = npts_cut(data1, t0 = t1 - start1, length = (start1 + end1))
+                            data2 = npts_cut(data2, t0 = t2 - start1 + OFFSET_CORR, npts = data1.stats.npts)
+
+                            print(f"Append i= {i} j={j} evA={ev_id[i]} evB={ev_id[j]} OFFSET={OFFSET:+5.2f} OFFSET_COR={OFFSET_CORR:+5.2f} {'!' if OFFSET_CORR > maxshift else ''}")
+
+                            results.append(AttribDict({
+                                'i': i,
+                                'j': j,
+                                'data1': data1,
+                                'data2': data2,
+                                'lags': lags,
+                                'corr': corr,
+                                'OFFSET': OFFSET,
+                                'OFFSET_CORR': OFFSET_CORR,
+                                's1':s1,
+                                's2':s2,
+                                't1':t1,
+                                't2':t2,
+                                'eid1': ev_id[i],
+                                'eid2': ev_id[j],
+                                'M': np.abs(np.corrcoef(data1.data, data2.data)[0][1])
+                            }))
+
+    return results
 
 
-## Visualização
+def assembly_matrix(results):
+    size = max(max([ r.i for r in results ]), max([ r.j for r in results ])) + 1
+    Mcorr = np.ones([size, size])
+
+    for r in results:
+        # ~ print("i=",r.i, "j=", r.j)
+        Mcorr[r.i][r.j] = r.M
+   
+    for i in range(size):
+        for j in range(size):
+            if j>i: Mcorr[j][i] = -1
+
+    return Mcorr
+
+
+## 4) Visualização _____________________________________________________
+# 	4.1) Plot a heatmap using a given matrix
 def plot_matrix(corr_M, ev_id, figsize=(8,6), cmap="Accent_r"):
     """
     matrix, list, tuple, string --> heatmap
@@ -223,6 +308,7 @@ def plot_matrix(corr_M, ev_id, figsize=(8,6), cmap="Accent_r"):
     Plot a heatmap using a given matrix
     """
     
+    size = len(ev_id)
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize)
 
     ### Inicial
@@ -246,214 +332,151 @@ def plot_matrix(corr_M, ev_id, figsize=(8,6), cmap="Accent_r"):
     ax.tick_params(axis="x", rotation=20, labelsize=12)
     ax.tick_params(axis="y", labelsize=12)
     
-    savefig("Correlation matrix", *, transparent=None, dpi='figure', 
-			format=None, metadata=None, bbox_inches=None, pad_inches=0.1,
-			facecolor='auto', edgecolor='auto', backend=None,
-		   )
-       
+    plt.show()
+    # ~ plt.savefig("Correlation matrix", *, transparent=None, dpi='figure', 
+            # ~ format=None, metadata=None, bbox_inches=None, pad_inches=0.1,
+            # ~ facecolor='auto', edgecolor='auto', backend=None,
+           # ~ )
+           
+
+#	4.2) Print da matriz
+def print_matrix(matrix, ev_id):
+    """
+    matrix, list --> string
+    
+    Print the matrix values in string format
+    """
+    
+    size = len(ev_id)
+
+    print('Matriz de correlação:')
+    for i in range(size):
+        print('|', end='   ')
+        for j in range(size):
+            if matrix[i,j] < 0:
+                print(f'{matrix[i,j]:.2f}', end='   ')
+            else:
+                print(f'{matrix[i,j]:.2f}', end='    ')
+        print('|', end ='')        
+        print()
+    print()
+
+
+#	4.3) Plot graphs
+def plot_graph(info_dict, ncols=5, figsize=(30,10)):
+    """
+    dict, int, tuple --> graph
+    
+    Plota os gráficos das formas de ondas sobrepostas pós correlação
+    """
+    # O número de gráficos deve ser igual ao número de correções que foram feitas
+    total_de_graficos = len(info_dict['corr'])
+    
+    # Gostaria que tivesse, no máximo, 5 colunas. Se tiiver menos de 5 gráficos, uma coluna
+    # para cada gráfico
+    if total_de_graficos < 5:
+        ncols = total_de_graficos
+    
+    # Ajustando o número de linhas de acordo com o npumero de colunas escolhidas (no caso 5)
+    if total_de_graficos % ncols == 0:
+        nrows = total_de_graficos//ncols
+        deno = ncols
+    else:
+        nrows = total_de_graficos//ncols + 1
+        deno = ncols + 1
+    
+    # Criando os gráficos
+    fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize, squeeze=False)
+    
+    
+    # Criando um contador que passará pelo indice do info_dict
+    cont = 0
+    for row in range(nrows):
+        for col in range(ncols):
+            title = info_dict['title'][cont]
+            image = ax[row][col]
+            # Plot da correlações
+            #ax[row][col].plot(info_dict['lags'][cont], info_dict['corr'][cont], color='red')
+            
+            # Plotando o 1o evento
+            Y1 = info_dict['data1'][cont]
+            X1 = Y1.times()
+            Y1 = Y1.data / np.max(Y1.data)
+            
+            image.plot(X1, Y1, color='darkorange', label=f'{title[:11]}')
+            
+            # Plotando o 2o evento
+            Y2 = info_dict['data2'][cont]
+            X2 = Y2.times() + info_dict['offset'][cont]
+            Y2 = Y2.data / np.max(Y2.data)
+    
+            image.plot(X2, Y2, 'b--', label=f'{title[18:]}')
+    
+            # Configurando o gráfico
+            image.set_title(title, fontsize=14)
+            image.set_xlim(0.0,2.5)
+            image.grid(alpha=0.25)
+            image.legend(fontsize=12)
+            cont += 1
+            
+            if cont == total_de_graficos:
+                break
+    
+    
+    plt.tight_layout()
        
 ######################################################################################################
 ## Código Principal
 ######################################################################################################
 if __name__ == '__main__':
-    # Argumentos
+    # 1) Call arguments
     args = cmdline()
 
-    phase, pre, pos = arg.window.split("/")
+    # Client
+    client_data  = fdsn.Client(args.fdsn)
+    client_event = fdsn.Client(args.event_fdsn) if args.event_fdsn is not None else client_data
+    
+    # Events ID
+    events = args.events
+    
+    # Station
+    station = args.station
+    
+    # Phase (P or S), cut pre and after phase pick
+    phase, pre, pos = args.window.split("/")
     pre = float(pre)
     pos = float(pos)
 
-    client_data  = fdsn.Client(args.fdsn)
-    client_event = fdsn.Client(args.event_fdsn) if args.event_fdsn is not None else client_data
+    # Band-pass
+    fmin = args.high_pass
+    fmax = args.low_pass
 
-    # Baixar os dados para os eventos na janela desejada
-    data = {}
-    for i, evid in enumerate(args.events):
-        try:
-            shift_margin = args.correction_shift + 1.0 if args.correct else 0.0
-            stid, t = evpicks(evid, phases=[ phase ], station = args.station, client = client_event)
-            data = evtrace(stid, t, t - (pre + shift_margin) , t + (pos + shift_margin),
-                           fmin = args.high_pass, fmax = args.low_pass, client = client_data)
-        except E:
-            print("Error,", E)
-            continue
+    # Correlation parameters
+    # Correct pick
+    correct = args.correct
+    
+    # Correction shift 
+    corr_shift =args.correction_shift
 
-        data[evid] = {
-                'stid'  : stid,
-                't_ref' : t,
-                'trace' : trace,
-            }
+    # 2) Processing & 3) Correlation 
 
-    # Processar
-    corr_results = correlate(data, args)
+    if phase == "P":
+        results=corr_matrix(events, station, phase=phase, fmin=fmin,
+                          fmax=fmax,start1=pre, start2=pre+corr_shift,
+                          end1=pos, end2=pos + corr_shift,
+                          maxshift = corr_shift,
+                          correction = correct,
+                          cl_e = client_event, cl_d = client_data)
 
-    # Gerar os resultados
-    if args.actions == 'matrix':
-        plot_matrix(data, corr_results, args)
-    elif args.actions == 'correct':
-        pass
-        # ~ plot_wf(data, corr_results, args)
-    else:
-        raise Exception("Bad mode")
+    elif phase == "S":
+        results=corr_matrix(ev_id, station, t0=0, phase=phase, fmin=fmin,
+                          fmax=fmax, start1=pre, start2=pre, 
+                          end1=pos, end2=pos+2*shiftmargin,
+                          maxshift=pre + 4*shiftmargin, n_samples=200,
+                          correction=correct)
+                          
 
-    sys.exit(0)
-
-    # ~ # Fazendo a correção do pick da onda P    
-    # ~ # Recriando o gráfico de correlação pós ajuste
-    # ~ Mcorr = np.ones([size, size])
-    
-    # ~ # Criando duas listas para arnazenar os lag e as formas de ondas pós correlação
-    # ~ info_dict = {'data1':[], 'data2':[],'lags':[],'corr':[], 'offset' : [], 'title': []}
-    
-    # ~ # Definindo os parâmetros para evpicks e evtrace
-    # ~ # 1) Filtro aplicado
-    # ~ fmin = args.low_pass
-    # ~ fmax = args.high_pass
-    
-    # ~ # 2) tamanho do 1o e do 2o traço, em tempo relativo ao pick da onda P
-    # ~ start1 = 0.2
-    # ~ start2 = 4
-    # ~ diff_start = abs(start2 - start1)
-    
-    # ~ end1 = 2
-    # ~ end2 = 2
-    
-    # ~ maxshift = args.correction_shift # [s]
-    
-    # ~ # Laço que passa por todos os eventos em ev_id e faz a leitura e correção do pick de P para as réplicas que foram
-    # ~ # registradas pela variável "station"
-    
-    # ~ for i in range(len(ev_id)):
-        # ~ # Passa a lista ev_id e tira os dados da "station"
-        # ~ for s1, t1 in evpicks(ev_id[i], phases=['P']):
-            # ~ if s1 == station:
-                # ~ data1, _, times1 = evtrace(station, t1, t1-start1, t1+end1, fmin, fmax)
-                # ~ dt = data1.stats.delta
-    
-                # ~ # Passa a lista ev_id e tira as formas de ondas dos demais eventos que aconteceram em "station"
-                # ~ for j in range(i + 1, len(ev_id)):
-                    # ~ for s2, t2 in evpicks(ev_id[j], phases=['P']):
-                        # ~ if s2 == station:
-                            # ~ # Aqui vai ser feito uma análise com um chute inicial
-                            # ~ data2, _, times2 = evtrace(station, t2, t2-start2, t2+end2, fmin, fmax)
-                            # ~ corr = correlate(data1.data, data2.data, mode='valid')
-                            # ~ lags = correlation_lags(len(data1.data), len(data2.data), mode='valid')
-                            
-                            # ~ if abs(lags[corr.argmax()] * dt) <= maxshift:
-                                # ~ OFFSET = lags[corr.argmax()] * dt
-                            # ~ else:
-                                # ~ OFFSET = 0
-                            # ~ FACTOR1 = 1/np.max(data1.data)
-                            # ~ FACTOR2 = 1/np.max(data2.data)
-                            
-                            # ~ info_dict['data1'].append(data1)
-                            # ~ info_dict['data2'].append(data2)
-                            # ~ info_dict['lags'].append(lags)
-                            # ~ info_dict['corr'].append(corr)
-                            # ~ info_dict['offset'].append(OFFSET)
-                            # ~ info_dict['title'].append(f'{ev_id[i]}  -X-  {ev_id[j]}')
-                            
-    
-                            # ~ # Constrói matriz
-                            # ~ t1    = data1.times() 
-                            
-                            # ~ t2    = data2.times() + OFFSET
-                            
-                            # ~ index1   = bisect.bisect_left(t2, 0) #next(i for i, t in enumerate(t2) if t >= 0)
-                            # ~ index2   = bisect.bisect_left(t2, np.max(t1)) #next(i for i, t in enumerate(t2) if t >= np.max(t1))
-                    
-                            # ~ if len(data1) != len(data2[index1:index2]):
-                                # ~ # print(i, j)
-                                # ~ # print(t1)
-                                # ~ # print(len(t1))
-                                # ~ # print()
-                                # ~ # print(len(t2[index1:index2]))
-                                # ~ # print(t2[index1:index2])
-                                
-                                # ~ if len(data2[index1:index2]) < len(data1):
-                                    # ~ index2+=1
-                                # ~ elif len(data2[index1:index2]) > len(data1):
-                                    # ~ index2-=1
-                    
-                            # ~ try:
-                                # ~ Mcorr[i,j] = np.corrcoef(data1, data2[index1:index2])[0][1]
-                            # ~ except:
-                                # ~ Mcorr[i,j] = 0
-    
-    # ~ for i in range(size):
-        # ~ for j in range(size):
-            # ~ if j>i:
-                # ~ Mcorr[j][i] = -1
-
-    # ~ # Plota o gráfico (está em uma célula a parte, pois se for mudar a paleta de cores não demora tanto)
-    # ~ Max = np.max(np.abs(Mcorr))
-    # ~ Min = -Max
-    # ~ plt.figure(figsize=(8, 8))
-    # ~ plt.imshow(Mcorr, cmap='Accent_r', vmin = Min, vmax = Max)
-    # ~ plt.colorbar(label='Correlation value')
-    # ~ plt.xticks(range(len(ev_id)), ev_id, rotation=20)
-    # ~ plt.yticks(range(len(ev_id)), ev_id)
-    # ~ plt.title(f'Correlation matrix (corrected)\nStation code: {station}\nNumber of events: {len(ev_id)}')
-    # ~ plt.show()
-
-    # ~ # Efetivamente faz o plot
-    # ~ plot_matrix(ev_id, Mcorr)
-
-
-    # ~ # Costruindo o plot das formas de ondas corrigidas sobrepostas
-    # ~ # O número de gráficos deve ser igual ao número de correções que foram feitas
-    # ~ total_de_graficos = len(info_dict['corr'])
-    
-    # ~ # Gostaria que tivesse, no máximo, 5 colunas. Se tiiver menos de 5 gráficos, uma coluna
-    # ~ # para cada gráfico
-    # ~ if total_de_graficos < 5:
-        # ~ ncols = total_de_graficos
-    # ~ else:
-        # ~ ncols = 5
-    
-    # ~ # Ajustando o número de linhas de acordo com o npumero de colunas escolhidas (no caso 5)
-    # ~ if total_de_graficos % ncols ==0:
-        # ~ nrows = total_de_graficos//ncols
-        # ~ deno = ncols
-    # ~ else:
-        # ~ nrows = total_de_graficos//ncols + 1
-        # ~ deno = ncols + 1
-    
-    # ~ # Criando os gráficos
-    # ~ fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=[15,8], squeeze=False)
-    
-    
-    # ~ # Criando um contador que passará pelo indice do info_dict
-    # ~ cont = 0
-    # ~ for row in range(nrows):
-        # ~ for col in range(ncols):
-    
-            # ~ image = ax[row][col]
-            # ~ # Plot da correlações
-            # ~ #ax[row][col].plot(info_dict['lags'][cont], info_dict['corr'][cont], color='red')
-            
-            # ~ # Plotando o 1o evento
-            # ~ Y1 = info_dict['data1'][cont]
-            # ~ X1 = Y1.times()
-            # ~ Y1 = Y1.data / np.max(Y1.data)
-            
-            # ~ image.plot(X1, Y1, color='darkorange')
-            
-            # ~ # Plotando o 2o evento
-            # ~ Y2 = info_dict['data2'][cont]
-            # ~ X2 = Y2.times() + info_dict['offset'][cont]
-            # ~ Y2 = Y2.data / np.max(Y2.data)
-    
-            # ~ image.plot(X2, Y2, 'b--')
-    
-            # ~ # Configurando o gráfico
-            # ~ image.set_title(info_dict['title'][cont], fontsize=10)
-            # ~ image.set_xlim(0.0,2.5)
-            # ~ image.grid(alpha=0.25)
-            
-            # ~ cont += 1
-            
-            # ~ if cont == total_de_graficos:
-                # ~ break
-    
-    # ~ plt.tight_layout()
+   # Gerar os resultados
+    Mcorr = assembly_matrix(results)
+    plot_matrix(Mcorr, events)
+        
