@@ -71,7 +71,7 @@ def cmdline():
 
 
 ## 2) Data Extraction __________________________________________________
-#	2.1) Get phase time pick and waveform_id.id (net, sta, loc, chan)
+#   2.1) Get phase time pick and waveform_id.id (net, sta, loc, chan)
 def evpicks(evid, phases = ['P'], station = None, client = 'http://10.110.0.135:18003'):
     '''
     str, str (default=SeisVL) list['str'] --> str, float
@@ -115,7 +115,7 @@ def evpicks(evid, phases = ['P'], station = None, client = 'http://10.110.0.135:
     return all_data
 
 
-#	2.2) Get trace information and UTC and Relative time of each sample
+#   2.2) Get trace information and UTC and Relative time of each sample
 def evtrace(sta, tp, t0, t1, fmin = 2.0, fmax = 10.0, margin = 2.0, client = None):
     '''
     str, float, float, float, float (opt), float (opt), float (opt), str (opt) --> numpy.ndarray, numpy.ndarray
@@ -147,7 +147,7 @@ def evtrace(sta, tp, t0, t1, fmin = 2.0, fmax = 10.0, margin = 2.0, client = Non
 
 
 ## 3) Processing _______________________________________________________
-#	3.1) Pick correction function
+#   3.1) Pick correction function
 def Ppick_cc(trace1, trace2):
     """
     Trace, Trace, float --> list, list, float
@@ -164,7 +164,7 @@ def Ppick_cc(trace1, trace2):
     return corr, lags, OFFSET
 
 
-#	3.2) Trim data with the same amount of samples needed
+#   3.2) Trim data with the same amount of samples needed
 def npts_cut(tr, t0, length = 2, npts = None):
     '''
     Trace, UTCDateTime, int, int, float --> Trace
@@ -255,7 +255,7 @@ def corr_matrix(ev_id, station, phase, fmin, fmax,
             data1 = npts_cut(data1, t0 = t1 - start1, length = (start1 + end1))
             data2 = npts_cut(data2, t0 = t2 - start1 + OFFSET_CORR, npts = data1.stats.npts)
 
-            print(f"Append i= {i} j={j} evA={ev_id[i]} evB={ev_id[j]} OFFSET={OFFSET:+5.2f} OFFSET_COR={OFFSET_CORR:+5.2f} {'!' if OFFSET_CORR > maxshift else ''}")
+            #print(f"Append i= {i} j={j} evA={ev_id[i]} evB={ev_id[j]} OFFSET={OFFSET:+5.2f} OFFSET_COR={OFFSET_CORR:+5.2f} {'!' if OFFSET_CORR > maxshift else ''}")
 
             results.append(AttribDict({
                 'i': i,
@@ -272,12 +272,13 @@ def corr_matrix(ev_id, station, phase, fmin, fmax,
                 't2':t2,
                 'eid1': ev_id[i],
                 'eid2': ev_id[j],
+                'title': f'{ev_id[i]} x {ev_id[j]}',
                 'M': np.abs(np.corrcoef(data1.data, data2.data)[0][1])
             }))
 
     return results
 
-
+# 3.4)
 def assembly_matrix(results):
     size = max(max([ r.i for r in results ]), max([ r.j for r in results ])) + 1
     Mcorr = np.ones([size, size])
@@ -293,12 +294,23 @@ def assembly_matrix(results):
     return Mcorr
 
 
+def assembly_off(results):
+    size = max(max([ r.i for r in results ]), max([ r.j for r in results ])) + 1
+    Mcorr = np.ones([size, size])
+
+    for r in results:
+        # ~ print("i=",r.i, "j=", r.j)
+        Mcorr[r.i][r.j] = r.OFFSET_CORR
+   
+    for i in range(size):
+        for j in range(size):
+            if j>i: Mcorr[j][i] = -1
+
+    return Mcorr
+
 ## 4) Visualização _____________________________________________________
-# 	4.1) Plot a heatmap using a given matrix
-
-
-# ~ def plot_matrix(results, figsize=(8,6), cmap="Accent_r")
-def plot_matrix(corr_M, ev_id, figsize=(8,6), cmap="Accent_r"):
+#   4.1) Plot a heatmap using a given matrix
+def plot_matrix(corr_M, ev_id, correct=False, figsize=(8,6), cmap="Accent_r"):
     """
     matrix, list, tuple, string --> heatmap
     
@@ -325,53 +337,29 @@ def plot_matrix(corr_M, ev_id, figsize=(8,6), cmap="Accent_r"):
         )
     
     ax.figure.axes[-1].yaxis.label.set_size(12)
-    ax.set_title(f'Correlation matrix\nStation code: {station} | Nº of events: {size}', fontsize=16)
+    if correct:
+        ax.set_title(f'Correlation matrix (corrected)\nStation code: {station} | Nº of events: {size}', fontsize=16)
+    else:
+        ax.set_title(f'Correlation matrix\nStation code: {station} | Nº of events: {size}', fontsize=16)
     ax.tick_params(axis="x", rotation=20, labelsize=12)
     ax.tick_params(axis="y", labelsize=12)
     
     plt.show()
-    # ~ plt.savefig("Correlation matrix", *, transparent=None, dpi='figure', 
-            # ~ format=None, metadata=None, bbox_inches=None, pad_inches=0.1,
-            # ~ facecolor='auto', edgecolor='auto', backend=None,
-           # ~ )
-           
 
 
-#	4.2) Print da matriz
-def print_matrix(matrix, ev_id):
-    """
-    matrix, list --> string
-    
-    Print the matrix values in string format
-    """
-    
-    size = len(ev_id)
-
-    print('Matriz de correlação:')
-    for i in range(size):
-        print('|', end='   ')
-        for j in range(size):
-            if matrix[i,j] < 0:
-                print(f'{matrix[i,j]:.2f}', end='   ')
-            else:
-                print(f'{matrix[i,j]:.2f}', end='    ')
-        print('|', end ='')        
-        print()
-    print()
-
-
-#	4.3) Plot graphs
-def plot_graph(info_dict, ncols=5, figsize=(30,10)):
+#   4.2) Plot graphs
+def plot_graph(results, ncols=5, figsize=(30,10)):
     """
     dict, int, tuple --> graph
     
     Plota os gráficos das formas de ondas sobrepostas pós correlação
     """
-    # O número de gráficos deve ser igual ao número de correções que foram feitas
-    total_de_graficos = len(info_dict['corr'])
     
-    # Gostaria que tivesse, no máximo, 5 colunas. Se tiiver menos de 5 gráficos, uma coluna
-    # para cada gráfico
+    # O número de gráficos deve ser igual ao número de correções que foram feitas
+    total_de_graficos = len([r.corr for r in results])
+    
+    # Gostaria que tivesse, no máximo, 5 colunas. Se tiver menos de 5 gráficos, um gráfico
+    # em cada coluna
     if total_de_graficos < 5:
         ncols = total_de_graficos
     
@@ -391,24 +379,24 @@ def plot_graph(info_dict, ncols=5, figsize=(30,10)):
     cont = 0
     for row in range(nrows):
         for col in range(ncols):
-            title = info_dict['title'][cont]
+            title = [r.title for r in results][cont]
             image = ax[row][col]
             # Plot da correlações
             #ax[row][col].plot(info_dict['lags'][cont], info_dict['corr'][cont], color='red')
             
             # Plotando o 1o evento
-            Y1 = info_dict['data1'][cont]
+            Y1 = [r.data1 for r in results][cont]
             X1 = Y1.times()
             Y1 = Y1.data / np.max(Y1.data)
             
             image.plot(X1, Y1, color='darkorange', label=f'{title[:11]}')
             
             # Plotando o 2o evento
-            Y2 = info_dict['data2'][cont]
-            X2 = Y2.times() + info_dict['offset'][cont]
+            Y2 = [r.data2 for r in results][cont]
+            X2 = Y2.times() + [r.OFFSET_CORR for r in results][cont]
             Y2 = Y2.data / np.max(Y2.data)
     
-            image.plot(X2, Y2, 'b--', label=f'{title[18:]}')
+            image.plot(X2, Y2, 'b--', label=f'{title[14:]}')
     
             # Configurando o gráfico
             image.set_title(title, fontsize=14)
@@ -419,11 +407,40 @@ def plot_graph(info_dict, ncols=5, figsize=(30,10)):
             
             if cont == total_de_graficos:
                 break
-    
-    
     plt.tight_layout()
 
+def plot_offset(off_M, ev_id, figsize=(8,6), cmap="Accent_r"):
+    """
+    matrix, list, tuple, string --> heatmap
+    
+    Plot a heatmap using a given matrix
+    """
+    
+    size = len(ev_id)
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize)
 
+    ### Inicial
+    Max = np.max(np.abs(off_M))
+    Min = -Max
+    
+    sns.heatmap(
+        off_M,
+        cmap=cmap,
+        vmin=Min,
+        vmax=Max,
+        annot=True,
+        ax=ax,
+        xticklabels=ev_id,
+        yticklabels=ev_id,
+        cbar_kws={'label': 'Correlation value'}
+        )
+    
+    ax.figure.axes[-1].yaxis.label.set_size(12)
+    ax.set_title(f'Offsets\nStation code: {station} | Nº of events: {size}', fontsize=16)
+    ax.tick_params(axis="x", rotation=20, labelsize=12)
+    ax.tick_params(axis="y", labelsize=12)
+    
+    plt.show()
 ######################################################################################################
 ## Código Principal
 ######################################################################################################
@@ -475,7 +492,36 @@ if __name__ == '__main__':
                           correction=correct)
                           
 
-   # Gerar os resultados
+    # Gerar os resultados
     Mcorr = assembly_matrix(results)
-    plot_matrix(Mcorr, events)
+    #plot_matrix(Mcorr, events, correct)
+    
+    #try:
+    plot_graph(results)
+    #except:
+     #   print('An error occurred while ploting the graphs')
+    
+    # Print offser_corr
+    if correct:
+        off_corr = [r.OFFSET_CORR for r in results]
+        off_M = assembly_off(results)
+        plot_offset(off_M, events)
+        
+        # Print lags individualy
+        for item in off_corr:
+            print(f'{item:+.2f} s')
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
         
