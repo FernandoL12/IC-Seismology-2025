@@ -10,11 +10,11 @@ import numpy as np
 import seaborn as sns
 from obspy.clients import fdsn
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 from obspy.core import UTCDateTime, AttribDict, Stream
 
 # For correlation
 from scipy.signal import correlate, correlation_lags
-from obspy.signal.cross_correlation import xcorr_pick_correction
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -243,6 +243,8 @@ def corr_matrix(ev_id, station, phase, fmin, fmax,
 
             OFFSET_CORR = 0.0
             OFFSET= 0.0
+            rs1=0.0
+            rs2=0.0
             lags = None
             corr = None
 
@@ -250,7 +252,9 @@ def corr_matrix(ev_id, station, phase, fmin, fmax,
                 corr, lags, OFFSET = Ppick_cc(data1, data2)
                 FACTOR1 = 1/np.max(data1.data)
                 FACTOR2 = 1/np.max(data2.data)
-                OFFSET_CORR = (t1 - data1.times('utcdatetime')[0]) - (t2 - data2.times('utcdatetime')[0] + OFFSET)
+                rs1 = data1.times('utcdatetime')[0]
+                rs2 = data2.times('utcdatetime')[0]
+                OFFSET_CORR = (t1 - rs1) - (t2 - rs2 + OFFSET)
 
             data1 = npts_cut(data1, t0 = t1 - start1, length = (start1 + end1))
             data2 = npts_cut(data2, t0 = t2 - start1 + OFFSET_CORR, npts = data1.stats.npts)
@@ -265,14 +269,15 @@ def corr_matrix(ev_id, station, phase, fmin, fmax,
                 'lags': lags,
                 'corr': corr,
                 'OFFSET': OFFSET,
-                'OFFSET_CORR': OFFSET_CORR,
-                's1':s1,
-                's2':s2,
+                'OFFSET_CORR': np.round(OFFSET_CORR, decimals=2),
+                'sta1':s1,
+                'sta2':s2,
                 't1':t1,
                 't2':t2,
+                's1': rs1,
+                's2': rs2,
                 'eid1': ev_id[i],
                 'eid2': ev_id[j],
-                'title': f'{ev_id[i]} x {ev_id[j]}',
                 'M': np.abs(np.corrcoef(data1.data, data2.data)[0][1])
             }))
 
@@ -287,6 +292,7 @@ def assembly_matrix(results):
     """
     size = max(max([ r.i for r in results ]), max([ r.j for r in results ])) + 1
     Mcorr = np.ones([size, size])
+    Mcorr[:,:] = np.nan
 
     for r in results:
         # ~ print("i=",r.i, "j=", r.j)
@@ -294,7 +300,7 @@ def assembly_matrix(results):
    
     for i in range(size):
         for j in range(size):
-            if j>i: Mcorr[j][i] = -1
+            if j>i: Mcorr[j][i] = np.nan
 
     return Mcorr
 
@@ -307,20 +313,21 @@ def assembly_off(results):
     """
     size = max(max([ r.i for r in results ]), max([ r.j for r in results ])) + 1
     Mcorr = np.zeros([size, size])
-
+    Mcorr[:,:] = np.nan
     for r in results:
         # ~ print("i=",r.i, "j=", r.j)
         Mcorr[r.i][r.j] = r.OFFSET_CORR
    
     for i in range(size):
         for j in range(size):
-            if j>i: Mcorr[j][i] = 0
+            if j>i: Mcorr[j][i] = np.nan
 
     return Mcorr
 
+
 ## 4) Visualização _____________________________________________________
 #   4.1) Plot a heatmap using a given matrix
-def plot_matrix(corr_M, ev_id, correct=False, figsize=(8,6), cmap="Accent_r"):
+def plot_matrix(corr_M, ev_id, correct=False, figsize=(7,6), cmap=plt.cm.RdYlGn):
     """
     matrix, list, tuple, string --> heatmap
     
@@ -331,9 +338,10 @@ def plot_matrix(corr_M, ev_id, correct=False, figsize=(8,6), cmap="Accent_r"):
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize)
 
     ### Inicial
-    Max = np.max(np.abs(corr_M))
-    Min = -Max
+    Max = 1 #np.nanmax(np.abs(corr_M))
+    Min = 0 #-Max
     
+    cmap.set_bad('#48494B')
     sns.heatmap(
         corr_M,
         cmap=cmap,
@@ -348,13 +356,14 @@ def plot_matrix(corr_M, ev_id, correct=False, figsize=(8,6), cmap="Accent_r"):
     
     ax.figure.axes[-1].yaxis.label.set_size(12)
     if correct:
-        ax.set_title(f'Correlation matrix (corrected)\nStation code: {station} | Nº of events: {size}', fontsize=16)
+        ax.set_title(f'Correlation matrix (corrected)\nStation code: {station} | Nº of events: {size}', fontsize=15)
     else:
-        ax.set_title(f'Correlation matrix\nStation code: {station} | Nº of events: {size}', fontsize=16)
+        ax.set_title(f'Correlation matrix\nStation code: {station} | Nº of events: {size}', fontsize=15)
     ax.tick_params(axis="x", rotation=20, labelsize=12)
     ax.tick_params(axis="y", labelsize=12)
     
-    plt.show()
+    plt.tight_layout()
+    plt.savefig("matrix.png")
 
 
 #   4.2) Plot graphs
@@ -417,9 +426,12 @@ def plot_graph(results, ncols=5, figsize=(30,10)):
             
             if cont == total_de_graficos:
                 break
+    
     plt.tight_layout()
+    plt.show()
+    
 
-def plot_offset(off_M, ev_id, figsize=(8,6), cmap="bwr"):
+def plot_offset(off_M, ev_id, figsize=(7,6), cmap=plt.cm.RdYlGn):
     """
     matrix, list, tuple, string --> heatmap
     
@@ -430,9 +442,10 @@ def plot_offset(off_M, ev_id, figsize=(8,6), cmap="bwr"):
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize)
 
     ### Inicial
-    Max = np.max(np.abs(off_M))
+    Max = np.nanmax(np.abs(off_M))
     Min = -Max
     
+    cmap.set_bad('#48494B')
     sns.heatmap(
         off_M,
         cmap=cmap,
@@ -446,11 +459,77 @@ def plot_offset(off_M, ev_id, figsize=(8,6), cmap="bwr"):
         )
     
     ax.figure.axes[-1].yaxis.label.set_size(12)
-    ax.set_title(f'Offsets\nStation code: {station} | Nº of events: {size}', fontsize=16)
+    ax.set_title(f'OFFSETS\nStation code: {station} | Nº of events: {size}', fontsize=15)
     ax.tick_params(axis="x", rotation=20, labelsize=12)
     ax.tick_params(axis="y", labelsize=12)
     
-    plt.show()
+    plt.tight_layout()
+    plt.savefig("matrix2.png")
+
+
+def plot_all(results, i, j):
+    def N(data):
+        return data / np.max(data)
+
+    try:
+        r = [ r for r in results if r.eid1 == i and r.eid2 == j][0]
+    except:
+        r = [ r for r in results if r.eid1 == j and r.eid2 == i][0]
+    
+    fig = plt.figure(figsize=(14,6))
+
+    gs = GridSpec(2, 2, figure=fig)
+
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax3 = fig.add_subplot(gs[1, :])
+
+    ax1.set_title(f"Before correlation\n|{r.eid1} -x- {r.eid2}|", fontsize=16) 
+    ax1.plot(r.data1.times('utcdatetime') - r.t1, N(r.data1.data), color ='C0', label='Event 1')
+    ax1.plot(r.data2.times('utcdatetime') - r.t2, N(r.data2.data), "--", color='#F97306', label='Event 2')
+    ax1.axvline(0.0, 0.05, 0.50, color ='C0', label='P pick (1)', lw=2)
+    ax1.axvline(0.0, 0.55, 0.95, color ='#F97306', label='P pick (2)', lw=2)
+    
+    mmin = min(r.data1.times('utcdatetime') - r.t1)
+    mmax = max(r.data1.times('utcdatetime') - r.t1)
+    mmin -= abs(0.02 * (mmax-mmin))
+    mmax += abs(0.02 * (mmax-mmin))
+    ax1.set_xlim((mmin, mmax))
+    
+    ax1.set_xlabel(f"Time relative to trace start time (s)\n\n", fontsize=14)
+    ax1.set_ylabel("Normalized amplitude", fontsize=14)
+    ax1.grid(alpha=0.4)
+    ax1.legend(loc=4, ncols = 2)
+
+    ax2.set_title(f"After correlation\n|{r.eid1} -x- {r.eid2}|", fontsize=16) 
+    ax2.plot(r.data2.times('utcdatetime') - r.t2 - r.OFFSET_CORR, N(r.data2.data), "--", color='#F97306', label='Event 2')
+    ax2.axvline(- r.OFFSET_CORR, 0.55, 0.95, color ='#F97306', label='P pick (2) | Original', lw=2)
+    ax2.axvline(0.0, color ='limegreen', label='P pick (2) | Corrected', ls='--', lw=1)
+    ax2.plot(r.data1.times('utcdatetime') - r.t1, N(r.data1.data), color ='C0', label='Event 1')
+    ax2.axvline(0.0, 0.05, 0.50, color ='C0', label='P pick (1)', lw=2)
+    ax2.set_xlim((mmin, mmax))
+    ax2.set_xlabel(f"Time relative to trace start time (s)\n\n", fontsize=14)
+    # ~ ax2.set_ylabel("Normalized amplitude", fontsize=14)
+    ax2.grid(alpha=0.4)
+    ax2.legend(loc=4, ncols = 2)
+
+    dt = r.data1.stats.delta
+    offcorr = (r.t1-r.s1)-(r.t2-r.s2)
+    ax3.plot(r.lags * dt - offcorr, N(r.corr), '.', color='red')
+    ax3.plot(r.lags * dt - offcorr, N(r.corr), color='red', lw=0.5)
+    ax3.axvline( - r.OFFSET_CORR, color ='limegreen', label=f'Lag ({ - r.OFFSET_CORR:.2f})')
+    ax3.grid(alpha=0.4)
+
+    ax3.set_title("Correlation lag", fontsize=16)
+    ax3.set_xlabel('LAG (s)', fontsize=14)
+    ax3.legend()
+
+    plt.tight_layout()
+    
+    # ~ plt.show()
+    plt.savefig("corr.png")
+
+
 ######################################################################################################
 ## Código Principal
 ######################################################################################################
@@ -502,19 +581,20 @@ if __name__ == '__main__':
                           correction=correct)
                           
 
+    
+    
     # Plot results
     ## 1) Correlation matrix
     Mcorr = assembly_matrix(results)
     plot_matrix(Mcorr, events, correct)
     ## 2) Plot waveforms superposed
-    plot_graph(results)
     
     ## 3) Print offset matrix
     if correct:
         off_corr = [r.OFFSET_CORR for r in results]
         off_M = assembly_off(results)
         plot_offset(off_M, events)
-        
+        plot_all(results,"val2025gmvf", "val2025gmvl")
         # Print lags individualy
         for item in off_corr:
             print(f'{item:+.2f} s')
