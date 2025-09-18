@@ -280,6 +280,11 @@ def corr_matrix(ev_id, station, phase, fmin, fmax,
 
 # 3.4)
 def assembly_matrix(results):
+    """
+    list --> matrix
+    
+    Builds the correlation matrix and put values
+    """
     size = max(max([ r.i for r in results ]), max([ r.j for r in results ])) + 1
     Mcorr = np.ones([size, size])
 
@@ -295,8 +300,13 @@ def assembly_matrix(results):
 
 
 def assembly_off(results):
+    """
+    list --> matriz
+    
+    Builds a matriz with correlation values
+    """
     size = max(max([ r.i for r in results ]), max([ r.j for r in results ])) + 1
-    Mcorr = np.ones([size, size])
+    Mcorr = np.zeros([size, size])
 
     for r in results:
         # ~ print("i=",r.i, "j=", r.j)
@@ -304,7 +314,7 @@ def assembly_off(results):
    
     for i in range(size):
         for j in range(size):
-            if j>i: Mcorr[j][i] = -1
+            if j>i: Mcorr[j][i] = 0
 
     return Mcorr
 
@@ -393,7 +403,7 @@ def plot_graph(results, ncols=5, figsize=(30,10)):
             
             # Plotando o 2o evento
             Y2 = [r.data2 for r in results][cont]
-            X2 = Y2.times() + [r.OFFSET_CORR for r in results][cont]
+            X2 = Y2.times() 
             Y2 = Y2.data / np.max(Y2.data)
     
             image.plot(X2, Y2, 'b--', label=f'{title[14:]}')
@@ -409,7 +419,7 @@ def plot_graph(results, ncols=5, figsize=(30,10)):
                 break
     plt.tight_layout()
 
-def plot_offset(off_M, ev_id, figsize=(8,6), cmap="Accent_r"):
+def plot_offset(off_M, ev_id, figsize=(8,6), cmap="bwr"):
     """
     matrix, list, tuple, string --> heatmap
     
@@ -432,7 +442,7 @@ def plot_offset(off_M, ev_id, figsize=(8,6), cmap="Accent_r"):
         ax=ax,
         xticklabels=ev_id,
         yticklabels=ev_id,
-        cbar_kws={'label': 'Correlation value'}
+        cbar_kws={'label': 'Offset'}
         )
     
     ax.figure.axes[-1].yaxis.label.set_size(12)
@@ -492,16 +502,14 @@ if __name__ == '__main__':
                           correction=correct)
                           
 
-    # Gerar os resultados
+    # Plot results
+    ## 1) Correlation matrix
     Mcorr = assembly_matrix(results)
-    #plot_matrix(Mcorr, events, correct)
-    
-    #try:
+    plot_matrix(Mcorr, events, correct)
+    ## 2) Plot waveforms superposed
     plot_graph(results)
-    #except:
-     #   print('An error occurred while ploting the graphs')
     
-    # Print offser_corr
+    ## 3) Print offset matrix
     if correct:
         off_corr = [r.OFFSET_CORR for r in results]
         off_M = assembly_off(results)
