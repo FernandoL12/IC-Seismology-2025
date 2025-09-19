@@ -363,7 +363,7 @@ def plot_matrix(corr_M, ev_id, correct=False, figsize=(7,6), cmap=plt.cm.RdYlGn)
     ax.tick_params(axis="y", labelsize=12)
     
     plt.tight_layout()
-    plt.savefig("matrix.png")
+    plt.savefig("matrix-corr.png")
 
 
 #   4.2) Plot graphs
@@ -398,7 +398,9 @@ def plot_graph(results, ncols=5, figsize=(30,10)):
     cont = 0
     for row in range(nrows):
         for col in range(ncols):
-            title = [r.title for r in results][cont]
+            ev1 = [r.eid1 for r in results][cont]
+            ev2 = [r.eid2 for r in results][cont]
+            title = ev1 + " -x- " + ev2
             image = ax[row][col]
             # Plot da correlações
             #ax[row][col].plot(info_dict['lags'][cont], info_dict['corr'][cont], color='red')
@@ -428,7 +430,8 @@ def plot_graph(results, ncols=5, figsize=(30,10)):
                 break
     
     plt.tight_layout()
-    plt.show()
+    
+    plt.savefig("all-graphs.png")
     
 
 def plot_offset(off_M, ev_id, figsize=(7,6), cmap=plt.cm.RdYlGn):
@@ -464,7 +467,7 @@ def plot_offset(off_M, ev_id, figsize=(7,6), cmap=plt.cm.RdYlGn):
     ax.tick_params(axis="y", labelsize=12)
     
     plt.tight_layout()
-    plt.savefig("matrix2.png")
+    plt.savefig("matrix-off.png")
 
 
 def plot_all(results, i, j):
@@ -527,7 +530,7 @@ def plot_all(results, i, j):
     plt.tight_layout()
     
     # ~ plt.show()
-    plt.savefig("corr.png")
+    plt.savefig("process.png")
 
 
 ######################################################################################################
@@ -582,7 +585,7 @@ if __name__ == '__main__':
                           
 
     
-    
+    plot_graph(results)
     # Plot results
     ## 1) Correlation matrix
     Mcorr = assembly_matrix(results)
